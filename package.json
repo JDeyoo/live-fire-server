@@ -1,0 +1,9 @@
+{
+  "name": "live-fire-server",
+  "version": "1.0.0",
+  "description": "Public lobby server for Live Fire",
+  "main": "server.js",
+  "private": true,
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
