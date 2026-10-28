@@ -13,7 +13,7 @@ const MAX_MSG = 200 * 1024;            // biggest message we accept (an enemy sn
 const MSGS_PER_SEC = 90;               // per player; anything beyond that is dropped
 
 const players = new Map();             // id -> { sock, name, joined, bucket, last }
-let nextId = 1, host = null, lobby = freshLobby();
+let nextId = 1, host = null, hostSeen = 0, lobby = freshLobby();
 
 function freshLobby() { return { seed: Math.floor(Math.random() * 1e9), wave: null, walls: new Set(), props: {} }; }
 
@@ -32,9 +32,9 @@ function accept(req, sock) {
   const acceptKey = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
   sock.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + acceptKey + '\r\n\r\n');
   sock.setNoDelay(true);
-  const id = nextId++, p = { sock, name: 'Player ' + id, joined: Date.now(), bucket: MSGS_PER_SEC, last: Date.now(), hello: false };
+  const id = nextId++, p = { sock, name: 'Player ' + id, joined: Date.now(), bucket: MSGS_PER_SEC, last: Date.now(), seen: Date.now(), hello: false };
   players.set(id, p);
-  if (host === null) host = id;
+  if (host === null) { host = id; hostSeen = Date.now(); }
   let buf = Buffer.alloc(0), parts = [];
   sock.on('data', chunk => {
     buf = Buffer.concat([buf, chunk]);
@@ -62,13 +62,13 @@ function accept(req, sock) {
 function cleanName(s) { return String(s || '').replace(/[^\w \-.!?']/g, '').trim().slice(0, 16) || 'Player'; }
 function onMessage(id, p, text) {
   // simple rate limit so one runaway client can't flood the room
-  const now = Date.now(); p.bucket = Math.min(MSGS_PER_SEC, p.bucket + (now - p.last) / 1000 * MSGS_PER_SEC); p.last = now;
+  const now = Date.now(); p.seen = now; p.bucket = Math.min(MSGS_PER_SEC, p.bucket + (now - p.last) / 1000 * MSGS_PER_SEC); p.last = now;
   if (p.bucket < 1) return; p.bucket -= 1;
   let m; try { m = JSON.parse(text); } catch (e) { return; }
   if (!m || typeof m.t !== 'string') return;
   if (m.t === 'hello') {
     p.name = cleanName(m.name); p.hello = true;
-    send(p, { t: 'welcome', id, host, seed: lobby.seed, wave: lobby.wave, walls: [...lobby.walls], props: lobby.props, players: [...players].filter(([k, q]) => k !== id && q.hello).map(([k, q]) => ({ id: k, name: q.name })) });
+    send(p, { t: 'welcome', id, host, seed: lobby.seed, wave: lobby.wave && Object.assign({ age: Date.now() - lobby.wave.at }, lobby.wave), walls: [...lobby.walls], props: lobby.props, players: [...players].filter(([k, q]) => k !== id && q.hello).map(([k, q]) => ({ id: k, name: q.name })) });
     broadcast({ t: 'join', id, name: p.name }, id);
     return;
   }
@@ -79,7 +79,7 @@ function onMessage(id, p, text) {
     case 'enemies': case 'kill': case 'ebullet':
       if (id === host) broadcast(m, id); return;
     case 'wave':
-      if (id === host) { lobby.wave = { wave: m.wave, waveT: m.waveT, inter: m.inter, at: Date.now() }; broadcast(m, id); } return;
+      if (id === host) { hostSeen = Date.now(); lobby.wave = { wave: m.wave, waveT: m.waveT, inter: m.inter, at: Date.now() }; broadcast(m, id); } return;
     case 'reset':   // the lobby cleared wave 20: start over on a new map
       if (id === host) { lobby = freshLobby(); broadcast({ t: 'reset', seed: lobby.seed }); } return;
     // damage to an enemy goes to the host, who owns its health
@@ -101,14 +101,25 @@ function leave(id) {
   const p = players.get(id); if (!p) return;
   players.delete(id); try { p.sock.destroy(); } catch (e) { }
   broadcast({ t: 'leave', id });
-  if (host === id) {
-    host = null; let oldest = Infinity;
-    for (const [k, q] of players) if (q.hello && q.joined < oldest) { oldest = q.joined; host = k; }
-    if (host !== null) broadcast({ t: 'host', id: host });
-  }
+  if (host === id) pickHost();
   if (!players.size) lobby = freshLobby();   // an empty lobby starts fresh next time
 }
 
+// the oldest player who is still active hosts
+function pickHost(except) {
+  const now = Date.now(); let best = null, oldest = Infinity;
+  for (const [k, q] of players) if (k !== except && q.hello && now - q.seen < 3000 && q.joined < oldest) { oldest = q.joined; best = k; }
+  if (best === null) for (const [k, q] of players) if (k !== except && q.hello && q.joined < oldest) { oldest = q.joined; best = k; }
+  host = best; hostSeen = now;
+  if (host !== null) broadcast({ t: 'host', id: host });
+}
+// a game that closed without saying goodbye can leave its connection open for a while behind Render's proxy:
+// drop anyone silent for 15 s, and if the host stops running the waves for 4 s, hand hosting to someone else
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, p] of players) if (now - p.seen > 15000) leave(id);
+  if (host !== null && now - hostSeen > 4000 && players.size > 1) pickHost(host);
+}, 1000);
 // keep-alive: ping everyone, drop anyone who stopped answering
 setInterval(() => { for (const [id, p] of players) { if (p.alive === false) { leave(id); continue; } p.alive = false; try { p.sock.write(Buffer.from([0x89, 0])); } catch (e) { leave(id); } } }, 20000);
 
