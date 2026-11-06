@@ -100,7 +100,7 @@ function onMessage(id, p, text) {
       broadcast(room, m, id); return;
     // Free For All: a hit goes to the player it hit, and the server keeps the score
     case 'pvp':
-      if (room.name === 'ffa' && players.has(m.to)) send(players.get(m.to), m); return;
+      if (room.name === 'ffa') { const to = m.to < 0 ? host : m.to; if (players.has(to)) send(players.get(to), m); } return;   // bots live on the host's game
     case 'frag':
       if (room.name === 'ffa') frag(room, id, m); return;
     // everything else (player state, shots, explosions, fire, chat-free emotes) is just passed along
@@ -108,8 +108,8 @@ function onMessage(id, p, text) {
       broadcast(room, m, id); return;
   }
 }
-function frag(room, vic, m) {
-  const lobby = room.lobby, by = room.players.has(m.by) && m.by !== vic ? m.by : 0;
+function frag(room, id, m) {
+  const lobby = room.lobby, vic = id === room.host && m.vic < 0 ? m.vic : id, by = (room.players.has(m.by) || m.by < 0) && m.by !== vic ? m.by : 0;   // negative ids are the host's bots
   if (lobby.ended) return;
   if (by) lobby.scores[by] = (lobby.scores[by] || 0) + 1;
   broadcast(room, { t: 'frag', by, vic, g: m.g, scores: lobby.scores });
