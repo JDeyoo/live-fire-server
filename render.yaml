@@ -3,6 +3,9 @@ services:
     name: live-fire-server
     runtime: node
     plan: free
-    buildCommand: echo no build needed
+    buildCommand: npm install
+    envVars:
+      - key: DATABASE_URL
+        sync: false
     startCommand: node server.js
     healthCheckPath: /

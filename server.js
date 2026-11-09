@@ -2,10 +2,11 @@
 // One lobby per mode (Zombies by default, ?room=ffa for Free For All): it hands out the map seed, relays what each player does, and remembers
 // the parts of the world that changed (walls blown up, sandbags moved) so late joiners see the same map.
 // The oldest player in the lobby is the "host": their game runs the enemies and the wave clock,
-// and the server passes the enemy snapshots on to everyone else. No dependencies: plain Node.
+// and the server passes the enemy snapshots on to everyone else. Plain Node; the one dependency, pg, is only for accounts.
 'use strict';
 const http = require('http');
 const crypto = require('crypto');
+const accounts = require('./accounts');   // usernames, passwords and saved progress (needs DATABASE_URL)
 
 const PORT = process.env.PORT || 8080;
 const MAX_PLAYERS = 16;
@@ -146,6 +147,6 @@ setInterval(() => {
 // keep-alive: ping everyone, drop anyone who stopped answering
 setInterval(() => { for (const room of Object.values(rooms)) for (const [id, p] of room.players) { if (p.alive === false) { leave(id, room); continue; } p.alive = false; try { p.sock.write(Buffer.from([0x89, 0])); } catch (e) { leave(id, room); } } }, 20000);
 
-const server = http.createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('Live Fire lobby: ' + rooms.zombies.players.size + ' in Zombies, ' + rooms.ffa.players.size + ' in Free For All\n'); });
+const server = http.createServer((req, res) => { if (accounts.handle(req, res)) return; res.writeHead(200, { 'content-type': 'text/plain' }); res.end('Live Fire lobby: ' + rooms.zombies.players.size + ' in Zombies, ' + rooms.ffa.players.size + ' in Free For All\n'); });
 server.on('upgrade', (req, sock) => accept(req, sock));
 server.listen(PORT, () => console.log('Live Fire lobby listening on ' + PORT));
